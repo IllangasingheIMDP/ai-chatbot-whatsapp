@@ -48,10 +48,8 @@ export function markdownToWhatsApp(text) {
     return `\x00IC${inlineCodes.length - 1}\x00`;
   });
 
-  // ── 3. Headers: # Heading → bold placeholder (restored later as *Heading*) ─
-  // We emit bold placeholders here instead of *Heading* directly so that the
-  // italic regex below can't mistake them for single-asterisk italic.
-  text = text.replace(/^#{1,6}\s+(.+)$/gm, '\n\x01$1\x01');
+  // ── 3. Headers: # Heading → *Heading* ───────────────────────────────────
+  text = text.replace(/^#{1,6}\s+(.+)$/gm, '\n*$1*');
 
   // ── 4. Bold + italic: ***text*** → *_text_* ─────────────────────────────
   text = text.replace(/\*{3}([^*\n]+)\*{3}/g, '*_$1_*');
@@ -61,10 +59,12 @@ export function markdownToWhatsApp(text) {
   text = text.replace(/\*{2}([^*\n]+)\*{2}/g, '\x01$1\x01');
 
   // ── 6. Italic (asterisks): *text* → _text_ ──────────────────────────────
-  // Now that **bold** and headers are replaced with \x01 placeholders, any
-  // remaining *text* is genuine Markdown italic.
-  // Avoid matching * at start of a line followed by a space (list bullets).
-  text = text.replace(/\*([^*\n]+)\*/g, (m, inner) => `_${inner}_`);
+  // Now that **bold** is replaced with placeholders, any remaining *text* is
+  // genuine Markdown italic. Avoid matching at the very start of a line
+  // followed by a space (which are unordered list items, handled later).
+  text = text.replace(/(?<!\n)\*([^*\n]+)\*/g, '_$1_');
+  // Also handle italic at start of line that isn't a list bullet
+  text = text.replace(/^\*([^*\n ][^*\n]*)\*/gm, '_$1_');
 
   // ── 7. Restore bold placeholders → *text* ───────────────────────────────
   text = text.replace(/\x01([^\x01\n]+)\x01/g, '*$1*');
