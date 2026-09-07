@@ -4,7 +4,7 @@ import * as mediaAggregator from './mediaAggregator.js';
 import { handleOnboarding } from './onboarding.js';
 import { handleCommand } from './commands.js';
 import { generateReply, GeminiError } from './geminiClient.js';
-import { chunkText } from './textUtils.js';
+import { chunkText, markdownToWhatsApp } from './textUtils.js';
 import { checkAndConsume } from './rateLimiter.js';
 import { config } from './config.js';
 import * as replyCache from './replyCache.js';
@@ -76,12 +76,13 @@ async function runChatTurn(jid, lookupKey, sock, files, text, incoming) {
   await geminiQueue.add(async () => {
     await sock.sendPresenceUpdate('composing', jid).catch(() => {});
     try {
-      const reply = await generateReply({
+      const rawReply = await generateReply({
         apiKey,
         model: user.model,
         history,
         newParts: parts,
       });
+      const reply = markdownToWhatsApp(rawReply);
 
       // Cache the user's incoming turn BEFORE sending the reply so that if
       // the user replies to the bot's response, both sides of the exchange
