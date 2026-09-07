@@ -46,6 +46,30 @@ export async function validateApiKey(apiKey) {
   }
 }
 
+// Sent with every generateContent request so Gemini formats output for
+// WhatsApp from the start, reducing how much the post-processor needs to fix.
+const WHATSAPP_SYSTEM_INSTRUCTION = {
+  parts: [
+    {
+      text:
+        'You are a helpful assistant. All responses are delivered via WhatsApp, ' +
+        'which has limited text formatting. Follow these rules strictly:\n' +
+        '• Use *text* for bold (NOT **text**).\n' +
+        '• Use _text_ for italic.\n' +
+        '• Use ~text~ for strikethrough.\n' +
+        '• Use `code` for inline code and ```block``` for multi-line code.\n' +
+        '• For section headings, write the heading on its own line in bold: *Heading*\n' +
+        '• Do NOT use Markdown headers (# or ##).\n' +
+        '• Do NOT use horizontal rules (--- or ***).\n' +
+        '• For bullet lists, use • or a plain dash followed by a space.\n' +
+        '• Do NOT use Markdown tables. Present tabular data as a bulleted or ' +
+        'numbered list instead, or as *Label:* value pairs on separate lines.\n' +
+        '• Do NOT use HTML tags.\n' +
+        'Keep responses clear and well-structured.',
+    },
+  ],
+};
+
 /**
  * history: array of { role: 'user'|'model', parts: [...] } from prior turns.
  * newParts: parts for the current turn (text and/or inlineData).
@@ -54,7 +78,7 @@ export async function generateReply({ apiKey, model, history, newParts }) {
   const contents = [...history, { role: 'user', parts: newParts }];
   const data = await apiFetch(`/models/${encodeURIComponent(model)}:generateContent`, apiKey, {
     method: 'POST',
-    body: JSON.stringify({ contents }),
+    body: JSON.stringify({ contents, systemInstruction: WHATSAPP_SYSTEM_INSTRUCTION }),
   });
   const candidate = data.candidates?.[0];
   const text = (candidate?.content?.parts || [])
