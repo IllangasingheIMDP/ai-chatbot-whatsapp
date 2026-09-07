@@ -1,5 +1,4 @@
 import * as userStore from './userStore.js';
-import * as sessionManager from './sessionManager.js';
 import { listGenerativeModels } from './geminiClient.js';
 import { formatModelList } from './textUtils.js';
 
@@ -7,11 +6,12 @@ const HELP_TEXT = `Commands:
 /help - show this message
 /model - change your Gemini model
 /newkey - replace your stored API key
-/clear - end the current conversation now
+/clear - about conversation history
 /status - show your current settings
 /delete_me - permanently delete all your stored data
 
-Just send a normal message (with or without a photo/file attached) to chat.`;
+To continue a conversation: reply to one of my messages.
+Every new message (not a reply) starts a fresh context.`;
 
 export async function handleCommand(jid, lookupKey, command, sock) {
   switch (command) {
@@ -51,21 +51,18 @@ export async function handleCommand(jid, lookupKey, command, sock) {
       return;
 
     case '/clear':
-      sessionManager.clearSession(lookupKey);
-      await sock.sendMessage(jid, { text: 'Conversation cleared. Next message starts fresh.' });
+      await sock.sendMessage(jid, {
+        text: 'There is no persistent conversation history to clear.\n\nEvery message you send starts fresh. To continue a previous conversation, reply to one of my earlier messages.',
+      });
       return;
 
     case '/status': {
       const user = userStore.getUser(jid);
-      const remainingMs = sessionManager.msRemaining(lookupKey);
-      const remainingMin = Math.ceil(remainingMs / 60000);
       await sock.sendMessage(jid, {
         text: [
           `Model: ${user?.model || 'not set'}`,
           `Setup: ${user?.stage || 'not started'}`,
-          remainingMs > 0
-            ? `Active conversation, clears in ~${remainingMin} min if idle.`
-            : 'No active conversation right now.',
+          'Context: reply-chain only (no persistent history).',
         ].join('\n'),
       });
       return;
@@ -73,7 +70,6 @@ export async function handleCommand(jid, lookupKey, command, sock) {
 
     case '/delete_me':
       userStore.deleteUser(jid);
-      sessionManager.clearSession(lookupKey);
       await sock.sendMessage(jid, {
         text: 'All your data has been deleted. Message me again anytime to start over.',
       });

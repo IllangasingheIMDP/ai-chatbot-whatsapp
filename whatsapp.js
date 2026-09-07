@@ -21,15 +21,33 @@ function unwrapMessage(message) {
   );
 }
 
+/**
+ * Extract the reply-chain metadata WhatsApp embeds in every message type.
+ * stanzaId is the ID of the message the sender was replying to (if any).
+ */
+function extractContextInfo(message) {
+  return (
+    message?.extendedTextMessage?.contextInfo ||
+    message?.imageMessage?.contextInfo ||
+    message?.videoMessage?.contextInfo ||
+    message?.audioMessage?.contextInfo ||
+    message?.documentMessage?.contextInfo ||
+    null
+  );
+}
+
 function extractIncoming(waMessage) {
   const message = unwrapMessage(waMessage.message);
   if (!message) return null;
 
+  const contextInfo = extractContextInfo(message);
+  const quotedStanzaId = contextInfo?.stanzaId || null;
+
   if (message.conversation) {
-    return { type: 'text', text: message.conversation };
+    return { type: 'text', text: message.conversation, quotedStanzaId };
   }
   if (message.extendedTextMessage?.text) {
-    return { type: 'text', text: message.extendedTextMessage.text };
+    return { type: 'text', text: message.extendedTextMessage.text, quotedStanzaId };
   }
 
   const mediaContents = [message.imageMessage, message.videoMessage, message.audioMessage, message.documentMessage];
@@ -42,6 +60,7 @@ function extractIncoming(waMessage) {
         mimetype: content.mimetype || 'application/octet-stream',
         caption: content.caption || '',
         tooLarge: fileLength > 0 && fileLength > maxBytes,
+        quotedStanzaId,
       };
     }
   }
@@ -97,6 +116,10 @@ export async function startBot() {
 
         const incoming = extractIncoming(waMessage);
         if (!incoming) continue;
+
+        // Attach the incoming message's own WhatsApp ID so the router can
+        // cache it for future reply-chain lookups.
+        incoming.stanzaId = waMessage.key.id || null;
 
         if (incoming.type === 'media' && !incoming.tooLarge) {
           try {

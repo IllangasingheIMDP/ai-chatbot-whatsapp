@@ -27,9 +27,14 @@ export const config = {
   dbPath: process.env.DB_PATH || `${dataDir}/bot.db`,
   authDir: process.env.AUTH_DIR || `${dataDir}/auth`,
 
-  // Conversation / session behaviour
-  sessionTimeoutMs: Number(process.env.SESSION_TIMEOUT_MINUTES || 30) * 60 * 1000,
-  maxHistoryTurns: Number(process.env.MAX_HISTORY_TURNS || 20),
+  // Reply-chain context (replaces time-based session history)
+  // How many prior turns to walk back through the WhatsApp reply chain
+  replyChainMaxDepth: Number(process.env.REPLY_CHAIN_MAX_DEPTH || 20),
+  // How long to keep cached message turns in memory (must be >= disappearingSeconds).
+  // Defaults to the disappearing-messages window so chains expire when messages do.
+  messageCacheTtlMs:
+    Number(process.env.MESSAGE_CACHE_TTL_MS ||
+      Number(process.env.DISAPPEARING_SECONDS || 86400) * 1000),
 
   // File handling
   maxFileSizeMb: Number(process.env.MAX_FILE_SIZE_MB || 15),

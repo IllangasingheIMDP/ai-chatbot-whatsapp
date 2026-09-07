@@ -1,6 +1,5 @@
 import PQueue from 'p-queue';
 import * as userStore from './userStore.js';
-import * as sessionManager from './sessionManager.js';
 import * as mediaAggregator from './mediaAggregator.js';
 import { handleOnboarding } from './onboarding.js';
 import { handleCommand } from './commands.js';
@@ -8,22 +7,47 @@ import { generateReply, GeminiError } from './geminiClient.js';
 import { chunkText } from './textUtils.js';
 import { checkAndConsume } from './rateLimiter.js';
 import { config } from './config.js';
+import * as replyCache from './replyCache.js';
 
 // Caps how many Gemini calls run at once across all users, so a burst of
 // traffic can't overwhelm the free-tier box.
 const geminiQueue = new PQueue({ concurrency: config.maxConcurrentGeminiCalls });
 
+/**
+ * Send text in WhatsApp-friendly chunks with a small random delay between
+ * them (reduces bot-detection likelihood). Returns the WhatsApp message ID
+ * of the last chunk sent, which is stored in the reply cache so future
+ * replies from the user can reconstruct the conversation chain.
+ */
 async function sendChunked(sock, jid, text) {
   const chunks = chunkText(text);
+  let lastSent = null;
   for (let i = 0; i < chunks.length; i++) {
-    await sock.sendMessage(jid, { text: chunks[i] });
+    lastSent = await sock.sendMessage(jid, { text: chunks[i] });
     if (i < chunks.length - 1) {
       await new Promise((r) => setTimeout(r, 400 + Math.random() * 400));
     }
   }
+  return lastSent?.key?.id || null;
 }
 
-async function runChatTurn(jid, lookupKey, sock, files, text) {
+/**
+ * Execute one Gemini chat turn.
+ *
+ * History is derived entirely from the WhatsApp reply chain: if `incoming`
+ * has a quotedStanzaId, replyCache.buildHistory walks backwards through
+ * cached turns to reconstruct the conversation the user threaded together.
+ * Every message without a reply starts with a completely empty context.
+ *
+ * @param {string}      jid
+ * @param {string}      lookupKey
+ * @param {object}      sock       - Baileys socket
+ * @param {Array}       files      - Downloaded media objects { mimetype, buffer }
+ * @param {string}      text       - Text content (may be empty when files present)
+ * @param {object|null} incoming   - Full incoming descriptor from whatsapp.js,
+ *                                   used to read stanzaId / quotedStanzaId.
+ */
+async function runChatTurn(jid, lookupKey, sock, files, text, incoming) {
   const apiKey = userStore.getDecryptedApiKey(jid);
   const user = userStore.getUser(jid);
   if (!apiKey || !user?.model) {
@@ -31,6 +55,7 @@ async function runChatTurn(jid, lookupKey, sock, files, text) {
     return;
   }
 
+  // Build the content parts for this user turn
   const parts = [];
   for (const file of files) {
     const cleanMime = (file.mimetype || 'application/octet-stream').split(';')[0].trim();
@@ -44,7 +69,9 @@ async function runChatTurn(jid, lookupKey, sock, files, text) {
   }
   if (parts.length === 0) return;
 
-  const { session } = sessionManager.touchSession(lookupKey);
+  // Reconstruct conversation history from the WhatsApp reply chain.
+  // If the user didn't reply to anything this is an empty array → fresh context.
+  const history = replyCache.buildHistory(incoming?.quotedStanzaId ?? null);
 
   await geminiQueue.add(async () => {
     await sock.sendPresenceUpdate('composing', jid).catch(() => {});
@@ -52,12 +79,22 @@ async function runChatTurn(jid, lookupKey, sock, files, text) {
       const reply = await generateReply({
         apiKey,
         model: user.model,
-        history: session.history,
+        history,
         newParts: parts,
       });
-      sessionManager.appendTurn(lookupKey, 'user', parts);
-      sessionManager.appendTurn(lookupKey, 'model', [{ text: reply }]);
-      await sendChunked(sock, jid, reply);
+
+      // Cache the user's incoming turn BEFORE sending the reply so that if
+      // the user replies to the bot's response, both sides of the exchange
+      // are available in the chain.
+      if (incoming?.stanzaId) {
+        replyCache.storeIncoming(incoming.stanzaId, parts, incoming.quotedStanzaId ?? null);
+      }
+
+      // Send the reply and cache the bot's turn, parented to the user's message.
+      const sentMsgId = await sendChunked(sock, jid, reply);
+      if (sentMsgId) {
+        replyCache.storeOutgoing(sentMsgId, [{ text: reply }], incoming?.stanzaId ?? null);
+      }
     } catch (err) {
       if (err instanceof GeminiError && [400, 401, 403].includes(err.status)) {
         await sock.sendMessage(jid, { text: 'Gemini rejected your API key. Send /newkey to update it.' });
@@ -96,8 +133,11 @@ export async function routeMessage(jid, lookupKey, sock, incoming) {
     return;
   }
 
+  // For media bursts, reply-chain context is not propagated (the burst itself
+  // is the context). For plain text messages, `incoming` carries stanzaId and
+  // quotedStanzaId so the chain is reconstructed correctly.
   const flushHandlers = {
-    onFlush: (j, files, flushText) => runChatTurn(j, lookupKey, sock, files, flushText),
+    onFlush: (j, files, flushText) => runChatTurn(j, lookupKey, sock, files, flushText, null),
   };
 
   if (incoming.type === 'media') {
@@ -134,5 +174,5 @@ export async function routeMessage(jid, lookupKey, sock, incoming) {
     return;
   }
 
-  await runChatTurn(jid, lookupKey, sock, [], incoming.text);
+  await runChatTurn(jid, lookupKey, sock, [], incoming.text, incoming);
 }
